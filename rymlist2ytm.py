@@ -9,6 +9,7 @@ import time
 
 try:
     from ytmusicapi import YTMusic
+    from ytmusicapi.auth.oauth import OAuthCredentials
 except ImportError:
     print("Error: ytmusicapi is required. Install it with: pip install ytmusicapi", file=sys.stderr)
     sys.exit(1)
@@ -28,6 +29,8 @@ def parse_args():
     parser.add_argument("--resume", action="store_true", help="Skip entries already in the playlist")
     parser.add_argument("--delay", type=float, default=1.0, help="Seconds between API calls (default: 1.0)")
     parser.add_argument("--auth", default="oauth.json", help="Path to OAuth token file (default: oauth.json)")
+    parser.add_argument("--client-id", default=None, help="Google OAuth client ID")
+    parser.add_argument("--client-secret", default=None, help="Google OAuth client secret")
     return parser.parse_args()
 
 
@@ -104,9 +107,26 @@ def main():
     if not os.path.exists(args.auth):
         print(f"Error: OAuth token file not found: {args.auth}", file=sys.stderr)
         print(f"\nRun this first to authenticate with YouTube Music:", file=sys.stderr)
-        print(f"  ytmusicapi oauth", file=sys.stderr)
-        print(f"\nThis will open a browser for Google sign-in and save the token to oauth.json", file=sys.stderr)
+        print(f"  ytmusicapi oauth --client-id YOUR_ID --client-secret YOUR_SECRET", file=sys.stderr)
         sys.exit(1)
+
+    # Resolve OAuth client credentials
+    client_id = args.client_id
+    client_secret = args.client_secret
+    if not client_id or not client_secret:
+        # Try to read from a credentials file alongside oauth.json
+        import json
+        creds_path = os.path.join(os.path.dirname(os.path.abspath(args.auth)), "client_credentials.json")
+        if os.path.exists(creds_path):
+            with open(creds_path, "r") as f:
+                creds = json.load(f)
+                client_id = client_id or creds.get("client_id")
+                client_secret = client_secret or creds.get("client_secret")
+        if not client_id or not client_secret:
+            print("Error: --client-id and --client-secret are required.", file=sys.stderr)
+            print(f"\nEither pass them as arguments or create {creds_path} with:", file=sys.stderr)
+            print('  {"client_id": "YOUR_ID", "client_secret": "YOUR_SECRET"}', file=sys.stderr)
+            sys.exit(1)
 
     # Read input CSV
     try:
@@ -123,10 +143,11 @@ def main():
     # Authenticate
     print("Authenticating with YouTube Music...")
     try:
-        yt = YTMusic(auth=args.auth)
+        oauth_credentials = OAuthCredentials(client_id=client_id, client_secret=client_secret)
+        yt = YTMusic(auth=args.auth, oauth_credentials=oauth_credentials)
     except Exception as e:
         print(f"Error: Authentication failed: {e}", file=sys.stderr)
-        print("Try re-running: ytmusicapi oauth", file=sys.stderr)
+        print("Try re-running: ytmusicapi oauth --client-id YOUR_ID --client-secret YOUR_SECRET", file=sys.stderr)
         sys.exit(1)
 
     # Create or resume playlist
