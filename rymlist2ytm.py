@@ -3,6 +3,9 @@
 
 import argparse
 import csv
+import hashlib
+import json
+import math
 import os
 import sys
 import time
@@ -97,6 +100,35 @@ def _search_with_retry(yt, query, filter_type, delay):
     return None
 
 
+def _ensure_auth_header(auth_path):
+    """Generate SAPISIDHASH authorization header from cookies if missing."""
+    with open(auth_path, "r") as f:
+        data = json.load(f)
+
+    if "authorization" in data:
+        return  # already has it
+
+    cookie = data.get("cookie", "")
+    sapisid = None
+    for part in cookie.split(";"):
+        part = part.strip()
+        if part.startswith("SAPISID="):
+            sapisid = part.split("=", 1)[1]
+            break
+
+    if not sapisid:
+        return  # can't generate without SAPISID
+
+    origin = "https://music.youtube.com"
+    timestamp = math.floor(time.time())
+    hash_input = f"{timestamp} {sapisid} {origin}"
+    sha1 = hashlib.sha1(hash_input.encode("utf-8")).hexdigest()
+    data["authorization"] = f"SAPISIDHASH {timestamp}_{sha1}"
+
+    with open(auth_path, "w") as f:
+        json.dump(data, f, indent=4)
+
+
 def main():
     args = parse_args()
 
@@ -106,6 +138,9 @@ def main():
         print(f"\nCreate browser.json with your YouTube Music cookies.", file=sys.stderr)
         print(f"See README for instructions.", file=sys.stderr)
         sys.exit(1)
+
+    # Ensure browser.json has the authorization header (generate SAPISIDHASH from cookies)
+    _ensure_auth_header(args.auth)
 
     # Read input CSV
     try:
