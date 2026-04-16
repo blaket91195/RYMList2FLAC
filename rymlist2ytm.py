@@ -29,6 +29,7 @@ def parse_args():
     parser.add_argument("--playlist-id", default=None, help="Existing playlist ID (for use with --resume)")
     parser.add_argument("--not-found", default="not_found.txt", help="Output file for entries not found (default: not_found.txt)")
     parser.add_argument("--resume", action="store_true", help="Skip entries already in the playlist")
+    parser.add_argument("--skip", type=int, default=0, help="Skip the first N entries (manual resume)")
     parser.add_argument("--delay", type=float, default=1.0, help="Seconds between API calls (default: 1.0)")
     parser.add_argument("--auth", default="browser.json", help="Path to auth file (default: browser.json)")
     return parser.parse_args()
@@ -166,10 +167,10 @@ def main():
     yt = _create_ytmusic(args.auth)
 
     # Create or resume playlist
-    skip_count = 0
+    skip_count = args.skip
     playlist_id = args.playlist_id
 
-    if args.resume:
+    if args.resume and not skip_count:
         if not playlist_id:
             print("Error: --resume requires --playlist-id", file=sys.stderr)
             sys.exit(1)
@@ -179,31 +180,32 @@ def main():
             print(f"Resuming playlist: {playlist_info.get('title', playlist_id)}")
             print(f"Tracks already in playlist: {skip_count}")
         except Exception as e:
-            print(f"Error: Could not read playlist {playlist_id}: {e}", file=sys.stderr)
+            print(f"Warning: Could not read playlist to auto-resume: {e}", file=sys.stderr)
+            print("Use --skip N to manually skip entries.", file=sys.stderr)
             sys.exit(1)
+
+    if playlist_id:
+        print(f"Using existing playlist: {playlist_id}")
     else:
-        if playlist_id:
-            print(f"Using existing playlist: {playlist_id}")
-        else:
-            print(f"Creating playlist: {args.playlist_name}")
-            try:
-                playlist_id = yt.create_playlist(
-                    title=args.playlist_name,
-                    description=f"Auto-generated from {args.input} by RYMList2FLAC",
-                    privacy_status="PRIVATE",
-                )
-                if not isinstance(playlist_id, str):
-                    print(f"Error: Failed to create playlist: {playlist_id}", file=sys.stderr)
-                    sys.exit(1)
-            except Exception as e:
-                print(f"Error: Failed to create playlist: {e}", file=sys.stderr)
+        print(f"Creating playlist: {args.playlist_name}")
+        try:
+            playlist_id = yt.create_playlist(
+                title=args.playlist_name,
+                description=f"Auto-generated from {args.input} by RYMList2FLAC",
+                privacy_status="PRIVATE",
+            )
+            if not isinstance(playlist_id, str):
+                print(f"Error: Failed to create playlist: {playlist_id}", file=sys.stderr)
                 sys.exit(1)
+        except Exception as e:
+            print(f"Error: Failed to create playlist: {e}", file=sys.stderr)
+            sys.exit(1)
 
     print(f"Playlist ID: {playlist_id}")
     print(f"(save this ID in case you need to --resume later)\n")
 
     # Open not-found file
-    nf_mode = "a" if args.resume else "w"
+    nf_mode = "a" if (args.resume or args.skip) else "w"
     notfound_file = open(args.not_found, nf_mode, encoding="utf-8")
 
     width = len(str(total))
