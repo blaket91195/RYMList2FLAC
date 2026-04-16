@@ -211,6 +211,10 @@ def main():
     width = len(str(total))
     added_count = 0
     notfound_count = 0
+    auth_fail_count = 0
+    consecutive_401s = 0
+    MAX_CONSECUTIVE_401S = 3
+    last_processed = skip_count
 
     print(f"RYMList2YTM - YouTube Music Playlist Builder")
     print(f"=============================================")
@@ -219,10 +223,19 @@ def main():
         print(f"Skipping first {skip_count} entries (already in playlist)")
     print()
 
+    auth_expired = False
     try:
+        refresh_interval = 50
+        entries_since_refresh = 0
+
         for i, (artist, title) in enumerate(entries, 1):
             if i <= skip_count:
                 continue
+
+            entries_since_refresh += 1
+            if entries_since_refresh >= refresh_interval:
+                yt = _create_ytmusic(args.auth)
+                entries_since_refresh = 0
 
             key = f"{artist} - {title}"
             label = f"[{i:>{width}}/{total}] {key}"
@@ -238,34 +251,53 @@ def main():
                         print("\u2713 added")
                         added_count += 1
                         added = True
+                        consecutive_401s = 0
                         time.sleep(args.delay)
                         break
                     except Exception as e:
                         if "401" in str(e) and add_attempt == 0:
-                            # Refresh auth and retry
                             yt = _create_ytmusic(args.auth)
                             continue
-                        print(f"\u2717 add failed ({e})")
-                        notfound_file.write(key + "\n")
-                        notfound_file.flush()
-                        notfound_count += 1
+                        if "401" in str(e):
+                            print("\u2717 auth expired")
+                            auth_fail_count += 1
+                            consecutive_401s += 1
+                        else:
+                            print(f"\u2717 add failed ({e})")
+                            notfound_file.write(key + "\n")
+                            notfound_file.flush()
+                            notfound_count += 1
+                            consecutive_401s = 0
+                if not added and consecutive_401s >= MAX_CONSECUTIVE_401S:
+                    auth_expired = True
+                    last_processed = i - consecutive_401s
+                    print(f"\n>>> Session cookies expired ({consecutive_401s} consecutive 401s).")
+                    print(f">>> Last successful entry: {last_processed}")
+                    print(f">>> Stopping to avoid wasting entries.\n")
+                    break
             else:
                 print("\u2717 not found")
                 notfound_file.write(key + "\n")
                 notfound_file.flush()
                 notfound_count += 1
+                consecutive_401s = 0
+
+            last_processed = i
 
     except KeyboardInterrupt:
         print("\n\nInterrupted! Progress saved to playlist.")
-        print(f"To resume: python3 {sys.argv[0]} --resume --playlist-id {playlist_id}")
     finally:
         notfound_file.close()
 
     print()
     print(f"=============================================")
-    print(f"Done! Added: {added_count} | Not found: {notfound_count} | Skipped: {skip_count}")
+    print(f"Done! Added: {added_count} | Not found: {notfound_count} | Auth failed: {auth_fail_count} | Skipped: {skip_count}")
     print(f"Playlist ID: {playlist_id}")
     print(f"Not found written to: {args.not_found}")
+    if auth_expired or auth_fail_count > 0:
+        resume_from = last_processed if not auth_expired else last_processed
+        print(f"\nTo resume after refreshing browser.json cookies:")
+        print(f"  python3 {sys.argv[0]} --skip {resume_from} --playlist-id {playlist_id} --input {args.input} --not-found {args.not_found}")
 
 
 if __name__ == "__main__":
