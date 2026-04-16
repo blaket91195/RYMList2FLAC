@@ -100,13 +100,20 @@ def _search_with_retry(yt, query, filter_type, delay):
     return None
 
 
+def _create_ytmusic(auth_path):
+    """Create a YTMusic instance with a fresh SAPISIDHASH."""
+    _ensure_auth_header(auth_path)
+    try:
+        return YTMusic(auth=auth_path)
+    except Exception as e:
+        print(f"Error: Authentication failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _ensure_auth_header(auth_path):
-    """Generate SAPISIDHASH authorization header from cookies if missing."""
+    """Generate a fresh SAPISIDHASH authorization header from cookies."""
     with open(auth_path, "r") as f:
         data = json.load(f)
-
-    if "authorization" in data:
-        return  # already has it
 
     cookie = data.get("cookie", "")
     sapisid = None
@@ -156,11 +163,7 @@ def main():
 
     # Authenticate
     print("Authenticating with YouTube Music...")
-    try:
-        yt = YTMusic(auth=args.auth)
-    except Exception as e:
-        print(f"Error: Authentication failed: {e}", file=sys.stderr)
-        sys.exit(1)
+    yt = _create_ytmusic(args.auth)
 
     # Create or resume playlist
     skip_count = 0
@@ -226,16 +229,24 @@ def main():
             video_id = search_ytm(yt, artist, title, args.delay)
 
             if video_id:
-                try:
-                    yt.add_playlist_items(playlist_id, videoIds=[video_id], duplicates=True)
-                    print("\u2713 added")
-                    added_count += 1
-                    time.sleep(args.delay)
-                except Exception as e:
-                    print(f"\u2717 add failed ({e})")
-                    notfound_file.write(key + "\n")
-                    notfound_file.flush()
-                    notfound_count += 1
+                added = False
+                for add_attempt in range(2):
+                    try:
+                        yt.add_playlist_items(playlist_id, videoIds=[video_id], duplicates=True)
+                        print("\u2713 added")
+                        added_count += 1
+                        added = True
+                        time.sleep(args.delay)
+                        break
+                    except Exception as e:
+                        if "401" in str(e) and add_attempt == 0:
+                            # Refresh auth and retry
+                            yt = _create_ytmusic(args.auth)
+                            continue
+                        print(f"\u2717 add failed ({e})")
+                        notfound_file.write(key + "\n")
+                        notfound_file.flush()
+                        notfound_count += 1
             else:
                 print("\u2717 not found")
                 notfound_file.write(key + "\n")
