@@ -56,49 +56,76 @@ def split_slash_title(title):
     return [title]
 
 
-def search_ytm(yt, artist, title, delay):
-    """Search YouTube Music with fallback cascade. Returns videoId or None."""
+def search_ytm_full(yt, artist, title, delay):
+    """Find all track videoIds for a release. Returns list (may be empty).
+
+    Tries album search first (full EP/LP track listing), falls back to
+    single song/video search for mixes, unreleased stuff, etc.
+    """
     variants = split_slash_title(title)
 
-    # Phase 1: Song-filtered search (official YTM songs only)
+    # Phase 1: Album search - get all tracks from matched album
     for variant in variants:
         query = f"{artist} {variant}"
-        result = _search_with_retry(yt, query, filter_type="songs", delay=delay)
-        if result:
-            return result
+        album_results = _search_with_retry(yt, query, filter_type="albums", delay=delay)
+        for album in album_results[:2]:
+            browse_id = album.get("browseId")
+            if not browse_id:
+                continue
+            video_ids = _get_album_tracks(yt, browse_id)
+            if video_ids:
+                return video_ids
 
-    # Phase 2: Unfiltered search (catches videos, uploads, etc.)
+    # Phase 2: Single-song fallback (mixes, singles, unreleased)
     for variant in variants:
         query = f"{artist} {variant}"
-        result = _search_with_retry(yt, query, filter_type=None, delay=delay)
-        if result:
-            return result
+        results = _search_with_retry(yt, query, filter_type="songs", delay=delay)
+        for item in results:
+            vid = item.get("videoId")
+            if vid:
+                return [vid]
 
-    return None
+    # Phase 3: Unfiltered fallback (uploads, videos)
+    for variant in variants:
+        query = f"{artist} {variant}"
+        results = _search_with_retry(yt, query, filter_type=None, delay=delay)
+        for item in results:
+            vid = item.get("videoId")
+            if vid:
+                return [vid]
+
+    return []
+
+
+def _get_album_tracks(yt, browse_id):
+    """Fetch all track videoIds from an album browseId. Returns list (may be empty)."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            album = yt.get_album(browse_id)
+            tracks = album.get("tracks", []) or []
+            return [t["videoId"] for t in tracks if t.get("videoId")]
+        except Exception:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (2 ** attempt))
+                continue
+            return []
+    return []
 
 
 def _search_with_retry(yt, query, filter_type, delay):
-    """Execute a single search with retry logic. Returns videoId or None."""
+    """Execute a single search with retry logic. Returns the raw results list (may be empty)."""
     time.sleep(delay)
     for attempt in range(MAX_RETRIES):
         try:
             if filter_type:
-                results = yt.search(query, filter=filter_type, limit=5)
-            else:
-                results = yt.search(query, limit=5)
-
-            for item in results:
-                vid = item.get("videoId")
-                if vid:
-                    return vid
-            return None
+                return yt.search(query, filter=filter_type, limit=5) or []
+            return yt.search(query, limit=5) or []
         except Exception:
             if attempt < MAX_RETRIES - 1:
-                wait = RETRY_DELAY * (2 ** attempt)
-                time.sleep(wait)
+                time.sleep(RETRY_DELAY * (2 ** attempt))
                 continue
-            return None
-    return None
+            return []
+    return []
 
 
 def _create_ytmusic(auth_path):
@@ -209,7 +236,8 @@ def main():
     notfound_file = open(args.not_found, nf_mode, encoding="utf-8")
 
     width = len(str(total))
-    added_count = 0
+    entries_added = 0
+    tracks_added = 0
     notfound_count = 0
     auth_fail_count = 0
     consecutive_401s = 0
@@ -220,7 +248,7 @@ def main():
     print(f"=============================================")
     print(f"Input: {args.input} ({total} entries)")
     if skip_count:
-        print(f"Skipping first {skip_count} entries (already in playlist)")
+        print(f"Skipping first {skip_count} entries")
     print()
 
     auth_expired = False
@@ -241,15 +269,16 @@ def main():
             label = f"[{i:>{width}}/{total}] {key}"
             print(f"{label} ... ", end="", flush=True)
 
-            video_id = search_ytm(yt, artist, title, args.delay)
+            video_ids = search_ytm_full(yt, artist, title, args.delay)
 
-            if video_id:
+            if video_ids:
                 added = False
                 for add_attempt in range(2):
                     try:
-                        yt.add_playlist_items(playlist_id, videoIds=[video_id], duplicates=True)
-                        print("\u2713 added")
-                        added_count += 1
+                        yt.add_playlist_items(playlist_id, videoIds=video_ids, duplicates=True)
+                        print(f"\u2713 added {len(video_ids)} track(s)")
+                        entries_added += 1
+                        tracks_added += len(video_ids)
                         added = True
                         consecutive_401s = 0
                         time.sleep(args.delay)
@@ -291,13 +320,12 @@ def main():
 
     print()
     print(f"=============================================")
-    print(f"Done! Added: {added_count} | Not found: {notfound_count} | Auth failed: {auth_fail_count} | Skipped: {skip_count}")
+    print(f"Done! Entries: {entries_added} | Tracks: {tracks_added} | Not found: {notfound_count} | Auth failed: {auth_fail_count} | Skipped: {skip_count}")
     print(f"Playlist ID: {playlist_id}")
     print(f"Not found written to: {args.not_found}")
     if auth_expired or auth_fail_count > 0:
-        resume_from = last_processed if not auth_expired else last_processed
         print(f"\nTo resume after refreshing browser.json cookies:")
-        print(f"  python3 {sys.argv[0]} --skip {resume_from} --playlist-id {playlist_id} --input {args.input} --not-found {args.not_found}")
+        print(f"  python3 {sys.argv[0]} --skip {last_processed} --playlist-id {playlist_id} --input {args.input} --not-found {args.not_found}")
 
 
 if __name__ == "__main__":
