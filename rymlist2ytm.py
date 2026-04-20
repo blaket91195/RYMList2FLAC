@@ -7,8 +7,10 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import time
+import unicodedata
 
 try:
     from ytmusicapi import YTMusic
@@ -56,11 +58,45 @@ def split_slash_title(title):
     return [title]
 
 
+def _normalize(s):
+    """Lowercase, strip diacritics and punctuation for loose comparison."""
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^a-z0-9 ]", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _artist_matches(query_artist, result):
+    """Return True if the query artist matches any artist field in result."""
+    q = _normalize(query_artist)
+    if not q:
+        return False
+    candidates = []
+    artists = result.get("artists") or []
+    for a in artists:
+        name = a.get("name", "") if isinstance(a, dict) else str(a)
+        if name:
+            candidates.append(name)
+    author = result.get("author")
+    if author:
+        candidates.append(author.get("name", "") if isinstance(author, dict) else str(author))
+    for c in candidates:
+        r = _normalize(c)
+        if not r:
+            continue
+        if q == r or q in r or r in q:
+            return True
+    return False
+
+
 def search_ytm_full(yt, artist, title, delay):
     """Find all track videoIds for a release. Returns list (may be empty).
 
     Tries album search first (full EP/LP track listing), falls back to
-    single song/video search for mixes, unreleased stuff, etc.
+    single song/video search for mixes, unreleased stuff, etc. Validates
+    artist match to avoid pulling in unrelated releases.
     """
     variants = split_slash_title(title)
 
@@ -68,7 +104,9 @@ def search_ytm_full(yt, artist, title, delay):
     for variant in variants:
         query = f"{artist} {variant}"
         album_results = _search_with_retry(yt, query, filter_type="albums", delay=delay)
-        for album in album_results[:2]:
+        for album in album_results[:5]:
+            if not _artist_matches(artist, album):
+                continue
             browse_id = album.get("browseId")
             if not browse_id:
                 continue
@@ -81,6 +119,8 @@ def search_ytm_full(yt, artist, title, delay):
         query = f"{artist} {variant}"
         results = _search_with_retry(yt, query, filter_type="songs", delay=delay)
         for item in results:
+            if not _artist_matches(artist, item):
+                continue
             vid = item.get("videoId")
             if vid:
                 return [vid]
@@ -90,6 +130,8 @@ def search_ytm_full(yt, artist, title, delay):
         query = f"{artist} {variant}"
         results = _search_with_retry(yt, query, filter_type=None, delay=delay)
         for item in results:
+            if not _artist_matches(artist, item):
+                continue
             vid = item.get("videoId")
             if vid:
                 return [vid]
