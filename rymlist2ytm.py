@@ -58,14 +58,35 @@ def split_slash_title(title):
     return [title]
 
 
+_CHAR_MAP = str.maketrans({
+    "Λ": "a", "λ": "a", "Δ": "a", "Α": "a",
+    "μ": "u", "Μ": "u",
+    "$": "s", "€": "e", "¥": "y",
+    "Ψ": "y", "ψ": "y",
+    "ƒ": "f", "Ƒ": "f",
+    "∀": "a", "∃": "e",
+    "Σ": "e", "σ": "o",
+    "Π": "n", "π": "n",
+    "Ω": "o", "ω": "w",
+    "β": "b", "Β": "b",
+    "¶": " ", "§": " ",
+})
+
+
 def _normalize(s):
     """Lowercase, strip diacritics and punctuation for loose comparison."""
     if not s:
         return ""
+    s = s.translate(_CHAR_MAP)
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = re.sub(r"[^a-z0-9 ]", " ", s.lower())
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _is_various_artists(artist):
+    n = _normalize(artist)
+    return n in ("various artists", "various", "va", "v a")
 
 
 def _artist_matches(query_artist, result, check_title=False):
@@ -104,7 +125,9 @@ def _title_matches(query_title, result):
     r_title = result.get("title", "")
     q = _normalize(query_title)
     r = _normalize(r_title)
-    if not q or not r:
+    if not q:
+        return True  # query is all special chars, can't validate title
+    if not r:
         return False
     if q == r or q in r or r in q:
         return True
@@ -115,7 +138,8 @@ def _title_matches(query_title, result):
     if not q_tokens:
         return True
     shared = q_tokens & r_tokens
-    return any(len(t) >= 3 for t in shared)
+    min_len = 2 if len(q_tokens) <= 2 else 3
+    return any(len(t) >= min_len for t in shared)
 
 
 def search_ytm_full(yt, artist, title, delay):
@@ -126,13 +150,14 @@ def search_ytm_full(yt, artist, title, delay):
     artist match to avoid pulling in unrelated releases.
     """
     variants = split_slash_title(title)
+    skip_artist_check = _is_various_artists(artist)
 
     # Phase 1: Album search - get all tracks from matched album
     for variant in variants:
-        query = f"{artist} {variant}"
+        query = variant if skip_artist_check else f"{artist} {variant}"
         album_results = _search_with_retry(yt, query, filter_type="albums", delay=delay)
         for album in album_results[:5]:
-            if not _artist_matches(artist, album):
+            if not skip_artist_check and not _artist_matches(artist, album):
                 continue
             if not _title_matches(variant, album):
                 continue
@@ -145,10 +170,10 @@ def search_ytm_full(yt, artist, title, delay):
 
     # Phase 2: Single-song fallback (mixes, singles, unreleased)
     for variant in variants:
-        query = f"{artist} {variant}"
+        query = variant if skip_artist_check else f"{artist} {variant}"
         results = _search_with_retry(yt, query, filter_type="songs", delay=delay)
         for item in results:
-            if not _artist_matches(artist, item):
+            if not skip_artist_check and not _artist_matches(artist, item):
                 continue
             if not _title_matches(variant, item):
                 continue
@@ -159,10 +184,10 @@ def search_ytm_full(yt, artist, title, delay):
     # Phase 3: Unfiltered fallback (uploads, videos, DJ mixes)
     # Videos often have artist only in the title, not in structured metadata
     for variant in variants:
-        query = f"{artist} {variant}"
+        query = variant if skip_artist_check else f"{artist} {variant}"
         results = _search_with_retry(yt, query, filter_type=None, delay=delay)
         for item in results:
-            if not _artist_matches(artist, item, check_title=True):
+            if not skip_artist_check and not _artist_matches(artist, item, check_title=True):
                 continue
             if not _title_matches(variant, item):
                 continue
