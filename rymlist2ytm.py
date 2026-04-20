@@ -68,8 +68,12 @@ def _normalize(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _artist_matches(query_artist, result):
-    """Return True if the query artist matches any artist field in result."""
+def _artist_matches(query_artist, result, check_title=False):
+    """Return True if the query artist matches any artist field in result.
+
+    If check_title=True, also accepts a match when the artist name appears
+    inside the result's title (common for YouTube video uploads).
+    """
     q = _normalize(query_artist)
     if not q:
         return False
@@ -87,6 +91,10 @@ def _artist_matches(query_artist, result):
         if not r:
             continue
         if q == r or q in r or r in q:
+            return True
+    if check_title:
+        r_title = _normalize(result.get("title", ""))
+        if r_title and q in r_title:
             return True
     return False
 
@@ -148,12 +156,13 @@ def search_ytm_full(yt, artist, title, delay):
             if vid:
                 return [vid]
 
-    # Phase 3: Unfiltered fallback (uploads, videos)
+    # Phase 3: Unfiltered fallback (uploads, videos, DJ mixes)
+    # Videos often have artist only in the title, not in structured metadata
     for variant in variants:
         query = f"{artist} {variant}"
         results = _search_with_retry(yt, query, filter_type=None, delay=delay)
         for item in results:
-            if not _artist_matches(artist, item):
+            if not _artist_matches(artist, item, check_title=True):
                 continue
             if not _title_matches(variant, item):
                 continue
