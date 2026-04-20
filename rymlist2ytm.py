@@ -142,6 +142,8 @@ def search_ytm_full(yt, artist, title, delay):
         for item in results:
             if not _artist_matches(artist, item):
                 continue
+            if not _title_matches(variant, item):
+                continue
             vid = item.get("videoId")
             if vid:
                 return [vid]
@@ -152,6 +154,8 @@ def search_ytm_full(yt, artist, title, delay):
         results = _search_with_retry(yt, query, filter_type=None, delay=delay)
         for item in results:
             if not _artist_matches(artist, item):
+                continue
+            if not _title_matches(variant, item):
                 continue
             vid = item.get("videoId")
             if vid:
