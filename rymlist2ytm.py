@@ -91,6 +91,25 @@ def _artist_matches(query_artist, result):
     return False
 
 
+def _title_matches(query_title, result):
+    """Return True if the result's title has meaningful overlap with query title."""
+    r_title = result.get("title", "")
+    q = _normalize(query_title)
+    r = _normalize(r_title)
+    if not q or not r:
+        return False
+    if q == r or q in r or r in q:
+        return True
+    stopwords = {"the", "a", "an", "and", "or", "of", "in", "to", "for", "with",
+                 "ep", "lp", "vol", "part", "1", "2", "3", "4", "i", "ii", "iii"}
+    q_tokens = set(q.split()) - stopwords
+    r_tokens = set(r.split()) - stopwords
+    if not q_tokens:
+        return True
+    shared = q_tokens & r_tokens
+    return any(len(t) >= 3 for t in shared)
+
+
 def search_ytm_full(yt, artist, title, delay):
     """Find all track videoIds for a release. Returns list (may be empty).
 
@@ -106,6 +125,8 @@ def search_ytm_full(yt, artist, title, delay):
         album_results = _search_with_retry(yt, query, filter_type="albums", delay=delay)
         for album in album_results[:5]:
             if not _artist_matches(artist, album):
+                continue
+            if not _title_matches(variant, album):
                 continue
             browse_id = album.get("browseId")
             if not browse_id:
@@ -285,6 +306,8 @@ def main():
     consecutive_401s = 0
     MAX_CONSECUTIVE_401S = 3
     last_processed = skip_count
+    playlist_part = 1
+    all_playlist_ids = [playlist_id]
 
     print(f"RYMList2YTM - YouTube Music Playlist Builder")
     print(f"=============================================")
@@ -326,10 +349,33 @@ def main():
                         time.sleep(args.delay)
                         break
                     except Exception as e:
-                        if "401" in str(e) and add_attempt == 0:
+                        err = str(e)
+                        if "Maximum playlist size" in err:
+                            playlist_part += 1
+                            new_name = f"{args.playlist_name} Part {playlist_part}"
+                            print(f"\n>>> Playlist full! Creating: {new_name}")
+                            try:
+                                playlist_id = yt.create_playlist(
+                                    title=new_name,
+                                    description=f"Auto-generated from {args.input} by RYMList2FLAC (Part {playlist_part})",
+                                    privacy_status="PRIVATE",
+                                )
+                                all_playlist_ids.append(playlist_id)
+                                print(f">>> New playlist ID: {playlist_id}\n")
+                                yt.add_playlist_items(playlist_id, videoIds=video_ids, duplicates=True)
+                                print(f"[{i:>{width}}/{total}] {key} ... \u2713 added {len(video_ids)} track(s)")
+                                entries_added += 1
+                                tracks_added += len(video_ids)
+                                added = True
+                                consecutive_401s = 0
+                                time.sleep(args.delay)
+                            except Exception as e2:
+                                print(f"\u2717 failed to create continuation playlist ({e2})")
+                            break
+                        if "401" in err and add_attempt == 0:
                             yt = _create_ytmusic(args.auth)
                             continue
-                        if "401" in str(e):
+                        if "401" in err:
                             print("\u2717 auth expired")
                             auth_fail_count += 1
                             consecutive_401s += 1
@@ -363,7 +409,8 @@ def main():
     print()
     print(f"=============================================")
     print(f"Done! Entries: {entries_added} | Tracks: {tracks_added} | Not found: {notfound_count} | Auth failed: {auth_fail_count} | Skipped: {skip_count}")
-    print(f"Playlist ID: {playlist_id}")
+    for pid in all_playlist_ids:
+        print(f"Playlist ID: {pid}")
     print(f"Not found written to: {args.not_found}")
     if auth_expired or auth_fail_count > 0:
         print(f"\nTo resume after refreshing browser.json cookies:")
